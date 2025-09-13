@@ -10,7 +10,7 @@ from subprocess import Popen, PIPE
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, SpinnerColumn
 from smb.SMBConnection import SMBConnection
-from queue import Queue
+from queue import Queue, Empty
 from shared import SharedData
 from logger import Logger
 
@@ -146,24 +146,30 @@ class SMBConnector:
         """
         Worker thread to process items in the queue.
         """
-        while not self.queue.empty():
+        while True:
             if self.shared_data.orchestrator_should_exit:
                 logger.info("Orchestrator exit signal received, stopping worker thread.")
                 break
 
-            adresse_ip, user, password, mac_address, hostname, port = self.queue.get()
-            shares = self.smb_connect(adresse_ip, user, password)
-            if shares:
-                with self.lock:
-                    for share in shares:
-                        if share not in IGNORED_SHARES:
-                            self.results.append([mac_address, adresse_ip, hostname, share, user, password, port])
-                            logger.success(f"Found credentials for IP: {adresse_ip} | User: {user} | Share: {share}")
-                    self.save_results()
-                    self.removeduplicates()
-                    success_flag[0] = True
-            self.queue.task_done()
-            progress.update(task_id, advance=1)
+            try:
+                adresse_ip, user, password, mac_address, hostname, port = self.queue.get(timeout=2)
+            except Empty:
+                break
+
+            try:
+                shares = self.smb_connect(adresse_ip, user, password)
+                if shares:
+                    with self.lock:
+                        for share in shares:
+                            if share not in IGNORED_SHARES:
+                                self.results.append([mac_address, adresse_ip, hostname, share, user, password, port])
+                                logger.success(f"Found credentials for IP: {adresse_ip} | User: {user} | Share: {share}")
+                        self.save_results()
+                        self.removeduplicates()
+                        success_flag[0] = True
+            finally:
+                self.queue.task_done()
+                progress.update(task_id, advance=1)
 
     def run_bruteforce(self, adresse_ip, port):
         self.load_scan_file()  # Reload the scan file to get the latest IPs and ports
