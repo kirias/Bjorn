@@ -6,7 +6,7 @@ import logging
 import time
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, SpinnerColumn
-from queue import Queue
+from queue import Queue, Empty
 from shared import SharedData
 from logger import Logger
 
@@ -105,28 +105,33 @@ class SQLConnector:
         """
         Worker thread to process items in the queue.
         """
-        while not self.queue.empty():
+        while True:
             if self.shared_data.orchestrator_should_exit:
                 logger.info("Orchestrator exit signal received, stopping worker thread.")
                 break
 
-            adresse_ip, user, password, port = self.queue.get()
-            success, databases = self.sql_connect(adresse_ip, user, password)
-            
-            if success:
-                with self.lock:
-                    # Ajouter une entrée pour chaque base de données trouvée
-                    for db in databases:
-                        self.results.append([adresse_ip, user, password, port, db])
-                    
-                    logger.success(f"Found credentials for IP: {adresse_ip} | User: {user} | Password: {password}")
-                    logger.success(f"Databases found: {', '.join(databases)}")
-                    self.save_results()
-                    self.remove_duplicates()
-                    success_flag[0] = True
-                    
-            self.queue.task_done()
-            progress.update(task_id, advance=1)
+            try:
+                adresse_ip, user, password, port = self.queue.get(timeout=2)
+            except Empty:
+                break
+
+            try:
+                success, databases = self.sql_connect(adresse_ip, user, password)
+                
+                if success:
+                    with self.lock:
+                        # Ajouter une entrée pour chaque base de données trouvée
+                        for db in databases:
+                            self.results.append([adresse_ip, user, password, port, db])
+                        
+                        logger.success(f"Found credentials for IP: {adresse_ip} | User: {user} | Password: {password}")
+                        logger.success(f"Databases found: {', '.join(databases)}")
+                        self.save_results()
+                        self.remove_duplicates()
+                        success_flag[0] = True
+            finally:
+                self.queue.task_done()
+                progress.update(task_id, advance=1)
 
     def run_bruteforce(self, adresse_ip, port):
         self.load_scan_file()
