@@ -6,7 +6,7 @@ import time
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, SpinnerColumn
 from ftplib import FTP
-from queue import Queue
+from queue import Queue, Empty
 from shared import SharedData
 from logger import Logger
 
@@ -97,21 +97,27 @@ class FTPConnector:
         """
         Worker thread to process items in the queue.
         """
-        while not self.queue.empty():
+        while True:
             if self.shared_data.orchestrator_should_exit:
                 logger.info("Orchestrator exit signal received, stopping worker thread.")
                 break
 
-            adresse_ip, user, password, mac_address, hostname, port = self.queue.get()
-            if self.ftp_connect(adresse_ip, user, password):
-                with self.lock:
-                    self.results.append([mac_address, adresse_ip, hostname, user, password, port])
-                    logger.success(f"Found credentials for IP: {adresse_ip} | User: {user}")
-                    self.save_results()
-                    self.removeduplicates()
-                    success_flag[0] = True
-            self.queue.task_done()
-            progress.update(task_id, advance=1)
+            try:
+                adresse_ip, user, password, mac_address, hostname, port = self.queue.get(timeout=2)
+            except Empty:
+                break
+
+            try:
+                if self.ftp_connect(adresse_ip, user, password):
+                    with self.lock:
+                        self.results.append([mac_address, adresse_ip, hostname, user, password, port])
+                        logger.success(f"Found credentials for IP: {adresse_ip} | User: {user}")
+                        self.save_results()
+                        self.removeduplicates()
+                        success_flag[0] = True
+            finally:
+                self.queue.task_done()
+                progress.update(task_id, advance=1)
 
     def run_bruteforce(self, adresse_ip, port):
         self.load_scan_file()  # Reload the scan file to get the latest IPs and ports
